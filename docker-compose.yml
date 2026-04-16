@@ -1,0 +1,110 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: docproc
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d docproc"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      APP_NAME: async-document-processing-workflow
+      DEBUG: "true"
+      API_PREFIX: /api
+      CORS_ORIGINS: '["http://localhost:3000"]'
+      ALLOWED_HOSTS: '["localhost","127.0.0.1"]'
+      ENFORCE_HTTPS: "false"
+      GZIP_MINIMUM_SIZE: "1024"
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/docproc
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      REDIS_PROGRESS_CHANNEL: job_progress
+      UPLOAD_DIR: /app/uploads
+      MAX_UPLOAD_SIZE_MB: "20"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/app:/app/app
+      - uploads_data:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build:
+      context: ./backend
+    command: celery -A app.workers.celery_app.celery_app worker -l info
+    environment:
+      APP_NAME: async-document-processing-workflow
+      DEBUG: "true"
+      API_PREFIX: /api
+      CORS_ORIGINS: '["http://localhost:3000"]'
+      ALLOWED_HOSTS: '["localhost","127.0.0.1"]'
+      ENFORCE_HTTPS: "false"
+      GZIP_MINIMUM_SIZE: "1024"
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/docproc
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      REDIS_PROGRESS_CHANNEL: job_progress
+      UPLOAD_DIR: /app/uploads
+      MAX_UPLOAD_SIZE_MB: "20"
+    volumes:
+      - ./backend/app:/app/app
+      - uploads_data:/app/uploads
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000/api
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  uploads_data:
